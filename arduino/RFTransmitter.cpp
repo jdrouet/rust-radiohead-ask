@@ -1,0 +1,72 @@
+#include "RFTransmitter.h"
+
+enum {
+  MAX_PAYLOAD_SIZE = 80,
+  MIN_PACKAGE_SIZE = 4,
+  MAX_PACKAGE_SIZE = MAX_PAYLOAD_SIZE + MIN_PACKAGE_SIZE
+};
+
+#if defined(__AVR__)
+#include <util/crc16.h>
+#endif
+
+static inline uint16_t crc_update(uint16_t crc, uint8_t data) {
+  #if defined(__AVR__)
+    return _crc_ccitt_update(crc, data);
+  #else
+    // Source: http://www.atmel.com/webdoc/AVRLibcReferenceManual/group__util__crc_1ga1c1d3ad875310cbc58000e24d981ad20.html
+    data ^= crc & 0xFF;
+    data ^= data << 4;
+
+    return ((((uint16_t)data << 8) | (crc >> 8)) ^ (uint8_t)(data >> 4)
+            ^ ((uint16_t)data << 3));
+  #endif
+}
+
+void RFTransmitter::sendPackage(byte *data, byte len) {
+  // Synchronize receiver
+  sendByte(0x00);
+  sendByte(0x00);
+  sendByte(0xE0);
+
+  // Add from, id and crc to the message
+  byte packageLen = len + 4;
+  sendByteRed(packageLen);
+
+  uint16_t crc = 0xffff;
+  crc = crc_update(crc, packageLen);
+
+  for (byte i = 0; i < len; ++i) {
+    sendByteRed(data[i]);
+    crc = crc_update(crc, data[i]);
+  }
+
+  sendByteRed(nodeId);
+  crc = crc_update(crc, nodeId);
+
+  sendByteRed(packageId);
+  crc = crc_update(crc, packageId);
+
+  sendByteRed(crc & 0xFF);
+  sendByteRed(crc >> 8);
+
+  digitalWrite(outputPin, LOW);
+  lineState = LOW;
+}
+
+void RFTransmitter::resend(byte *data, byte len) {
+  if (len > MAX_PAYLOAD_SIZE)
+    len = MAX_PAYLOAD_SIZE;
+
+  sendPackage(data, len);
+
+  for (byte i = 0; i < resendCount; ++i) {
+    delay(random(backoffDelay, backoffDelay << 1));
+    sendPackage(data, len);
+  }
+}
+
+void RFTransmitter::send(byte *data, byte len) {
+  ++packageId;
+  resend(data, len);
+}
